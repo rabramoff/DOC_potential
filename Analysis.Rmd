@@ -1,0 +1,946 @@
+---
+title: "Analysis_07082019"
+author: "Rose Abramoff"
+date: "7/8/2019"
+output: html_document
+---
+#Timer and Toggles
+```{r}
+rm(list=ls())
+
+master.start.time <- Sys.time()
+```
+
+#Load libraries
+```{r}
+ library(readxl)
+ library(dplyr)
+ library(ggplot2)
+ library(raster)
+ library(mice)
+ library(VIM)
+ library(corrplot)
+ library(randomForest)
+ library(forestFloor)
+ library(rfUtilities)
+
+figdir = "/Users/rzabramoff/Dropbox (Climate)/LSCE work files/Documents/Qmax/"
+datadir <- "/Users/rzabramoff/Dropbox (Climate)/LSCE work files/Code/DOC_potential/"
+```
+
+##Make plot of data locations
+```{r}
+makelabelsEW <- function(x) {ifelse(x < 0, parse(text=paste0(x,"^o", "*W")), ifelse(x > 0, parse(text=paste0(x,"^o", "*E")),x))}
+makelabelsNS <- function(x) {ifelse(x < 0, parse(text=paste0(x,"^o", "*S")), ifelse(x > 0, parse(text=paste0(x,"^o", "*N")),x))}
+
+xbreaks <- seq(-180,180,60)
+xlabels <- makelabelsEW(xbreaks)
+
+ybreaks <- seq(-90,90,30)
+ylabels <- makelabelsNS(ybreaks)
+
+wrld <- map_data("world", ylim=c(-60,90))
+
+gg1 <- ggplot() + 
+  geom_polygon(data = wrld, aes(x=long, y = lat, group = group), fill = NA, color = "black") + 
+  coord_fixed(1.3) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"), axis.ticks = element_blank(), legend.position="bottom",legend.title=element_text(size=15), 
+    legend.text=element_text(size=12), axis.text = element_text(size=12))+
+ scale_x_continuous("", breaks = xbreaks, labels = xlabels) +
+ scale_y_continuous("", breaks = ybreaks, labels = ylabels)
+
+barsize=10
+```
+
+##Load multiplot function
+```{r}
+mypal <- c("#CC79A7", "#009E73", "#0072B2", "#D55E00", "#56B4E9","#E69F00", "#F0E442","#999999")
+
+multiplot <- function(..., plotlist=NULL, file, cols=2, layout=NULL) {
+  library(grid)
+  
+  plots <- c(list(...), plotlist)
+  
+  numPlots = length(plots)
+  
+  if (is.null(layout)) {
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                     ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+  
+  if (numPlots==1) {
+    print(plots[[1]])
+    
+  } else {
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+    
+    for (i in 1:numPlots) {
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+      
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+#Prep relationships
+##Read in dataset
+```{r}
+print.df <- read.csv(file=paste0(datadir,"printdf.csv"))
+```
+
+##Add climate covariates
+```{r}
+load(file=paste0(datadir,"climatevars.Rdata"))
+
+map.points <- cbind(print.df$Longitude, print.df$Latitude)
+print.df$MAT.C.map <- raster::extract(mat, map.points)
+print.df$MAP.mm.map <- raster::extract(map, map.points)
+
+plot(print.df$MAT.C, print.df$MAT.C.map)
+lines(c(0,60000),c(0,60000), lty=2)
+
+plot(print.df$MAP.mm, print.df$MAP.mm.map)
+lines(c(0,60000),c(0,60000), lty=2)
+
+summary(lm(print.df$MAT.C.map ~ print.df$MAT.C))
+summary(lm(print.df$MAP.mm.map ~ print.df$MAP.mm))
+```
+
+##Make map of locations
+```{r}
+pdf(file=paste0(figdir,"Map_of_locations.pdf"), height=4, width=7)
+gg1 + geom_point(data=print.df, aes(x=Longitude, y=Latitude), color="red", pch=1, size=1)
+dev.off()
+```
+
+##Impute missing data
+```{r}
+#Subset of larger dataset to contain only relevant columns for analyses
+depth.key <- read_excel(paste0(datadir,"depth_key.xlsx"))
+
+temp.df <- left_join(print.df, depth.key, by="Depth.cm")
+
+missing.df <- temp.df[,c("Qmax.mg.kg","k.L.mg","Clay.per","Fed.g.kg","pH","OC.mg.kg","Alo.g.kg","Ald.g.kg","Alp.g.kg","Feo.g.kg","Fep.g.kg","Caex.cmol.kg","Silt.per","Sand.per","Soil.Order","Mid.Depth.cm","BD.g.cm3","MAT.C.map","MAP.mm.map")]
+missing.df <- missing.df %>%
+  dplyr::rename(MAT.C = MAT.C.map, MAP.mm = MAP.mm.map)
+
+#Interpolate missing data
+out <- mice(missing.df, seed=1)
+bigdf <- mice::complete(out)
+bigdf$Dataset <- print.df$Dataset
+
+pdf(file=paste0(figdir,"FigureS7.pdf"), height=8, width=8)
+densityplot(out)
+dev.off()
+
+#Proportion missing
+#Silt and Sand are the most missing
+all <- dim(missing.df)[1]
+maxmiss <- dim(missing.df[!is.na(missing.df$Silt.per),])[1]
+(all-maxmiss)/all
+
+#How much data are missing for pH and Clay.per?
+(all-dim(missing.df[!is.na(missing.df$pH),])[1])/all
+(all-dim(missing.df[!is.na(missing.df$Clay.per),])[1])/all
+```
+
+##Visualize Imputed Data
+```{r}
+pdf(file=paste0(figdir,"FigureS6.pdf"), height=3, width=7)
+aggr = aggr(missing.df, col=mdc(1:2), numbers=TRUE, sortVars=TRUE, labels=names(missing.df), cex.axis=.7, gap=3, ylab=c("Proportion of missingness","Missingness Pattern"))
+dev.off()
+
+pairs.df <- missing.df[,c("Qmax.mg.kg", "k.L.mg", "Clay.per", "Fed.g.kg", "pH", "OC.mg.kg", "Alo.g.kg", "Ald.g.kg", "Alp.g.kg", "Feo.g.kg", "Fep.g.kg", "Caex.cmol.kg", "Silt.per", "Sand.per","MAT.C","MAP.mm")]
+
+dfcor <- cor(pairs.df, use="complete.obs")
+
+pdf(file=paste0(figdir,"FigureS4.pdf"), width=11, height=8)
+corrplot(dfcor, method="shade", shade.col=NA, tl.col="black", tl.srt=45, cl.cex=1.5, tl.cex = 1.5)
+dev.off()
+```
+
+##Random Forest
+```{r}
+q.df <- bigdf[,c("Qmax.mg.kg","Clay.per","Fed.g.kg","pH","OC.mg.kg","Alo.g.kg","Ald.g.kg","Alp.g.kg","Feo.g.kg","Fep.g.kg","Caex.cmol.kg","Silt.per","Sand.per","Soil.Order","Mid.Depth.cm","BD.g.cm3","MAT.C","MAP.mm")] 
+k.df <- bigdf[,c("k.L.mg","Clay.per","Fed.g.kg","pH","OC.mg.kg","Alo.g.kg","Ald.g.kg","Alp.g.kg","Feo.g.kg","Fep.g.kg","Caex.cmol.kg","Silt.per","Sand.per","Soil.Order","Mid.Depth.cm","BD.g.cm3","MAT.C","MAP.mm")] 
+q.names = k.names = c("Clay %", expression(Fe[d]~"(g/kg)"), "pH", "OC (mg/kg)", expression(Al[o]~"(g/kg)"), expression(Al[d]~"(g/kg)"),
+expression(Al[p]~"(g/kg)"),
+expression(Fe[o]~"(g/kg)"),
+expression(Fe[p]~"(g/kg)"),
+expression(Ca[ex]~"(cmol/kg)"),
+"Silt %", "Sand %", "Soil Order", "Depth (cm)", "BD (g/cm3)","MAT (C)","MAP (mm)")
+
+q.names = c(expression(Al[d]~"(g/kg)"),
+            "Silt %", 
+            "Sand %",
+            "Depth (cm)",
+            expression(Fe[p]~"(g/kg)"),
+            expression(Al[o]~"(g/kg)"),
+            "BD (g/cm3)",
+            "pH",
+            expression(Ca[ex]~"(cmol/kg)"),
+            "OC (mg/kg)", 
+            expression(Al[p]~"(g/kg)"),
+            expression(Fe[o]~"(g/kg)"),
+            "MAP (mm)",
+            "Soil Order", 
+            "Clay %",
+            "MAT (C)",
+            expression(Fe[d]~"(g/kg)")  
+            )
+k.names = c("Silt %",
+            "Sand %",
+            "Depth (cm)", 
+            "BD (g/cm3)",
+            expression(Ca[ex]~"(cmol/kg)"),
+            expression(Al[o]~"(g/kg)"),
+            expression(Al[d]~"(g/kg)"),
+            expression(Fe[p]~"(g/kg)"),
+            expression(Al[p]~"(g/kg)"),
+            expression(Fe[o]~"(g/kg)"),
+            expression(Fe[d]~"(g/kg)"),
+            "Clay %",
+            "MAP (mm)",
+            "Soil Order", 
+            "MAT (C)",
+            "pH",
+            "OC (mg/kg)"
+            )
+#log transform y-variables
+q.df$Qmax.mg.kg <- log(q.df$Qmax.mg.kg)
+k.df$k.L.mg <- log(k.df$k.L.mg)
+
+#clean missing values
+q.df <- q.df[complete.cases(q.df),]
+k.df <- k.df[complete.cases(k.df),]
+
+q.df.long <- q.df
+k.df.long <- k.df
+
+set.seed(1)
+q.rf <- randomForest(Qmax.mg.kg ~ ., data=q.df, importance=T, proximity=T, type = "regression") 
+set.seed(1)
+k.rf <- randomForest(k.L.mg ~ ., data=k.df, importance=T, proximity=T, type = "regression")
+print(paste(q.rf$mse[q.rf$ntree],"qmax MSE"))
+print(paste(q.rf$rsq[q.rf$ntree],"qmax R2"))
+print(paste(k.rf$mse[k.rf$ntree],"kaff MSE"))
+print(paste(k.rf$rsq[k.rf$ntree],"kaff R2"))
+
+#generate variable importance (mean decrease in node impurity/mean increase in node purity)
+q.imp = round(importance(q.rf, type=2, scale=T),2)[,1]
+k.imp = round(importance(k.rf, type=2, scale=T),2)[,1]
+
+pdf(file=paste0(figdir,"Figure1.pdf"), width=7, height=4.25)
+par(mfrow=c(1,2))
+par(mar = c(3.5,6,1,0.5)+.3)
+barplot(sort(q.imp), horiz=TRUE, las=2, main=expression(Q[sp]~ "(mg/kg)"), names.arg=q.names)
+barplot(sort(k.imp), horiz=TRUE, las=2, main=expression(k~ "(L/mg)"), names.arg=k.names)
+dev.off()
+```
+
+###Save an RF model
+```{r}
+q.df <- bigdf[,c("Qmax.mg.kg","Clay.per","pH","Soil.Order","MAT.C","MAP.mm")]
+k.df <- bigdf[,c("k.L.mg","Clay.per","pH","Soil.Order","MAT.C","MAP.mm")] 
+q.names = k.names <- c("Clay %", "pH", "Soil.Order","MAT.C","MAP.mm")
+
+#log transform y-variables
+q.df$Qmax.mg.kg <- log(q.df$Qmax.mg.kg)
+k.df$k.L.mg <- log(k.df$k.L.mg)
+
+#clean missing values
+q.df <- q.df[complete.cases(q.df),]
+k.df <- k.df[complete.cases(k.df),]
+
+set.seed(1)
+q.rf <- randomForest(Qmax.mg.kg ~ ., data=q.df, importance=T, proximity=T, type = "regression", keep.inbag=T) 
+set.seed(1)
+k.rf <- randomForest(k.L.mg ~ ., data=k.df, importance=T, proximity=T, type = "regression", keep.inbag=T)
+
+print(paste(q.rf$mse[q.rf$ntree],"qmax MSE"))
+print(paste(q.rf$rsq[q.rf$ntree],"qmax R2"))
+print(paste(k.rf$mse[k.rf$ntree],"kaff MSE"))
+print(paste(k.rf$rsq[k.rf$ntree],"kaff R2"))
+
+#generate variable importance (mean decrease in node impurity/mean increase in node purity)
+q.imp = round(importance(q.rf, type=2, scale=T),2)[,1]
+k.imp = round(importance(k.rf, type=2, scale=T),2)[,1]
+
+par(mfrow=c(1,2))
+par(mar = c(3.5,6,1,0.5)+.3)
+barplot(q.imp, horiz=TRUE, las=2, main=expression(Q[sp]~ "(mg/kg)"), names.arg=q.names)
+barplot(k.imp, horiz=TRUE, las=2, main=expression(k~ "(L/mg)"), names.arg=k.names)
+
+save(q.rf, k.rf, file=paste0(datadir,"/bestRFmodels.Rdata"))
+```
+
+###RF Cross-validation Methods
+```{r}
+q.rf.cv <- rf.crossValidation(q.rf, q.df[,!(names(q.df) %in% "Qmax.mg.kg")] , p = 0.2, n = 99, seed = 1)
+q.rf.cv$fit.var.exp
+q.rf.cv$fit.mse
+
+k.rf.cv <- rf.crossValidation(k.rf, k.df[,!(names(k.df) %in% "k.L.mg")] , p = 0.2, n = 99, seed = 1)
+k.rf.cv$fit.var.exp
+k.rf.cv$fit.mse
+```
+
+###RF CV generate new models
+```{r}
+q.df <- bigdf[,c("Qmax.mg.kg","Clay.per","pH","Soil.Order","MAT.C","MAP.mm")]
+q.df$Qmax.mg.kg <- log(q.df$Qmax.mg.kg)
+q.df <- q.df[complete.cases(q.df),]
+
+set.seed(1)
+ss <- sample(rep(1:5, diff(floor(nrow(q.df) * c(0, 0.2, 0.4, 0.6, 0.8, 1)))))
+random_5 <- setNames(split(q.df,ss), c("1","2","3","4","5"))
+q.df$random5 <- ss
+
+set.seed(1)
+q.df.sub <- q.df[q.df$random5!="1",-7]
+q.rf1 <- randomForest(Qmax.mg.kg ~ ., data=q.df.sub, importance=T, proximity=T, type = "regression", keep.inbag=T) 
+set.seed(1)
+q.df.sub <- q.df[q.df$random5!="2",-7]
+q.rf2 <- randomForest(Qmax.mg.kg ~ ., data=q.df.sub, importance=T, proximity=T, type = "regression", keep.inbag=T) 
+set.seed(1)
+q.df.sub <- q.df[q.df$random5!="3",-7]
+q.rf3 <- randomForest(Qmax.mg.kg ~ ., data=q.df.sub, importance=T, proximity=T, type = "regression", keep.inbag=T) 
+set.seed(1)
+q.df.sub <- q.df[q.df$random5!="4",-7]
+q.rf4 <- randomForest(Qmax.mg.kg ~ ., data=q.df.sub, importance=T, proximity=T, type = "regression", keep.inbag=T) 
+set.seed(1)
+q.df.sub <- q.df[q.df$random5!="5",-7]
+q.rf5 <- randomForest(Qmax.mg.kg ~ ., data=q.df.sub, importance=T, proximity=T, type = "regression", keep.inbag=T) 
+
+save(q.rf1, q.rf2, q.rf3, q.rf4, q.rf5, file=paste0(datadir,"CVRFmodels.Rdata"))
+```
+
+###Do partial dependence
+```{r}
+partialq <- forestFloor(rf.fit = q.rf,
+                        X = q.df,
+                        calc_np = F,
+                        binary_reg = F,
+                        impType=2)
+
+partialk <- forestFloor(rf.fit = k.rf,
+                        X = k.df,
+                        calc_np = F,
+                        binary_reg = F,
+                        impType=2)
+
+```
+####Make partial plots
+```{r}
+#plots cross-validated partial feature contributions (y-axis) depending on the variable value (x-axis)
+
+x_line <- 2.5
+y_line <- 2
+x_cex <- 0.85
+y_cex <- 0.7
+y_at_q <- -0.2
+y_at_k <- -0.4
+
+pdf(file=paste0(figdir,"Figure2a.pdf"), height=4, width=6)
+Col=fcol(partialq,1,orderByImportance=T)
+par(mfrow=(c(2,3)))
+par(mar=c(3.5,3.5,0.5,0), pch=16)
+plot(partialq$X[1]$Clay.per, partialq$FCmatrix[,1],col=Col, ylab="", xlab="", ylim=c(-0.8,0.5)) 
+mtext(text = expression(bold("Clay (%)")), side = 1, line=x_line, cex=x_cex)
+mtext(text = expression(bold("Q"[sp]~" Partial Feature Contribution")), side = 2, line=y_line, cex=y_cex, at=y_at_q)
+plot(partialq$X[2]$pH, partialq$FCmatrix[,2],col=Col, xlab="", ylab="", ylim=c(-0.8,0.5)) 
+mtext(text = expression(bold("pH")), side = 1, line=x_line, cex=x_cex)
+plot(partialq$X[3]$Soil.Order, partialq$FCmatrix[,3],col=Col, xlab="", ylab="", ylim=c(-0.8,0.5), xaxt="n")
+text(seq(1, 6, by=1), par("usr")[3]-0.075, labels = c("Alfisol","Entisol","Inceptisol","Mollisol","Spodosol","Ultisol"), srt = 30, pos = 1, xpd = TRUE)
+mtext(text = expression(bold("Soil Order")), side = 1, line=x_line, cex=x_cex)
+plot(partialq$X[4]$MAT.C, partialq$FCmatrix[,4],col=Col, xlab="", ylab="", ylim=c(-0.8,0.5)) 
+mtext(text = expression(bold("MAT ("~degree~"C)")), side = 1, line=x_line, cex=x_cex)
+mtext(text = expression(bold("Q"[sp]~" Partial Feature Contribution")), side = 2, line=y_line, cex=y_cex, at=y_at_q)
+plot(partialq$X[5]$MAP.mm, partialq$FCmatrix[,5],col=Col, pch=16, xlab="", ylab="", ylim=c(-0.8,0.5))
+mtext(text = expression(bold("MAP (mm)")), side = 1, line=x_line, cex=x_cex)
+dev.off()
+
+pdf(file=paste0(figdir,"Figure2b.pdf"), height=4, width=6)
+Col=fcol(partialk,1,orderByImportance=T)
+par(mfrow=(c(2,3)))
+par(mar=c(3.5,3.5,0.5,0), pch=16)
+plot(partialk$X[1]$Clay.per, partialk$FCmatrix[,1],col=Col, xlab="", ylab="", ylim=c(-1.2,0.6)) 
+mtext(text = expression(bold("Clay (%)")), side = 1, line=x_line, cex=x_cex)
+mtext(text = expression(bold("k Partial Feature Contribution")), side = 2, line=y_line, cex=y_cex, at=y_at_k)
+plot(partialk$X[2]$pH, partialk$FCmatrix[,2],col=Col, xlab= "", ylab="", ylim=c(-1.2,0.6)) 
+mtext(text = expression(bold("pH")), side = 1, line=x_line, cex=x_cex)
+plot(partialk$X[3]$Soil.Order, partialk$FCmatrix[,3],col=Col, xlab="", ylab="", ylim=c(-1.2,0.6), xaxt="n")
+text(seq(1, 6, by=1), par("usr")[3]-0.1, labels = c("Alfisol","Entisol","Inceptisol","Mollisol","Spodosol","Ultisol"), srt = 30, pos = 1, xpd = TRUE)
+mtext(text = expression(bold("Soil Order")), side = 1, line=x_line, cex=x_cex)
+plot(partialk$X[4]$MAT.C, partialk$FCmatrix[,4],col=Col, xlab="", ylab="", ylim=c(-1.2,0.6)) 
+mtext(text = expression(bold("MAT ("~degree~"C)")), side = 1, line=x_line, cex=x_cex)
+mtext(text = expression(bold("k Partial Feature Contribution")), side = 2, line=y_line, cex=y_cex, at=y_at_k)
+plot(partialk$X[5]$MAP.mm, partialk$FCmatrix[,5],col=Col, pch=16, xlab="", ylab="", ylim=c(-1.2,0.6)) 
+mtext(text = expression(bold("MAP (mm)")), side = 1, line=x_line, cex=x_cex)
+dev.off()
+```
+
+####Save ranges of predictor variables in dataset
+```{r}
+dlims <- matrix(0,4,2)
+dlims[1,1:2] <- range(bigdf$Clay.per)
+dlims[2,1:2] <- range(bigdf$pH)
+dlims[3,1:2] <- range(bigdf$MAT.C)
+dlims[4,1:2] <- range(bigdf$MAP.mm)
+
+rownames(dlims) <- c("Clay.per","pH","MAT.C","MAP.mm")
+```
+
+#Extrapolate Qmax and K to WoSIS profiles
+##Hex Plot Settings
+```{r}
+load(file=paste0(datadir,"wosis.Rdata"))
+load(file=paste0(datadir,"climatevars.Rdata"))
+
+color.setting.K = col=rev(terrain.colors(255))
+color.setting.Q = col=rev(terrain.colors(255))
+```
+
+##Separate topsoils 0-30cm with subsoils 30cm-1m
+```{r}
+load(file=paste0(datadir,"indexdf.Rdata"))
+lay$top.num <- as.numeric(as.character(lay$top))
+lay$bottom.num <- as.numeric(as.character(lay$bottom))
+
+topsoil <- lay[lay$bottom.num<30,]
+subsoil <- lay[lay$bottom.num>30 & lay$bottom.num<100,]
+
+temp.topsoil <- merge(topsoil, indexdf, by="profile_id")
+temp.subsoil <- merge(subsoil, indexdf, by="profile_id")
+topsoil <- temp.topsoil[temp.topsoil$same.clay==F && temp.topsoil$same.ph==F,]
+subsoil <- temp.subsoil[temp.subsoil$same.clay==F && temp.subsoil$same.ph==F,]
+```
+
+##Estimating saturation characteristics
+###Compute profiles function with random forest
+```{r}
+#BDWS #bulk density whole soil (kg/dm3)
+#CLAY #clay total (g/100g)
+#PHCA #pH CaCl2 (same as Mayes et al. 2012)
+#ORGC #organic carbon (g/kg)
+
+format_lay <- function(lay) {
+  
+newdf <- lay %>%
+        dplyr::group_by(profile_id)%>% 
+        dplyr::summarise(BD.g.cm3 = mean(bdws_value_avg, na.rm=T),
+                  Clay.per = mean(clay_value_avg, na.rm=T),
+                  pH = mean(phca_value_avg, na.rm=T),
+                  OC.g.kg = mean(orgc_value_avg, na.rm=T),
+                  Coarse.per = mean(cfvo_value_avg, na.rm=T)
+                  )
+
+#remove pH outliers
+newdf$pH[newdf$pH>15] <- NaN
+
+#join df and newdf
+df$profile_id <- as.character(df$profile_id)
+lldf <- left_join(newdf, df, by=c("profile_id"))
+
+lldf <- lldf %>%
+  dplyr::select(c(profile_id, BD.g.cm3, Clay.per, pH, OC.g.kg, cstx_order_name, MAT.C, MAP.mm, latitude, longitude, Coarse.per)) %>%
+  dplyr::rename(Soil.Order = cstx_order_name)
+
+#tot soc gC/kg soil * bulk density kg soil/dm3 * 1000dm3/m3 *1kg/1000g = kg/m3
+lldf$tot.soc.kg.m3 <- lldf$OC.g.kg*lldf$BD.g.cm3
+lldf$OC.mg.kg <- lldf$OC.g.kg*1000
+#tempvalue.totsoc <- lldf$tot.soc.kg.m3
+
+return(lldf)
+}
+
+compute_profiles <- function(lldf) {
+lldf.complete <- lldf %>%
+    tidyr::drop_na(Soil.Order, Clay.per, pH, MAT.C, MAP.mm) %>%
+  dplyr::select(c(Clay.per, pH, Soil.Order, MAT.C, MAP.mm)) %>% 
+  dplyr::filter(Soil.Order == "Alfisol" | Soil.Order == "Entisol" | Soil.Order == "Inceptisol" | Soil.Order == "Mollisol" | Soil.Order == "Spodosol" | Soil.Order == "Ultisol") %>%
+  droplevels(exclude = "")
+
+lldf.complete$k.L.mg <- exp(predict(k.rf, lldf.complete))
+
+lldf.complete$qmax.mg.kg <- exp(predict(q.rf, lldf.complete))
+
+lldf.complete$qmax.g.kg <- lldf.complete$qmax.mg.kg/1000
+
+lldf <- dplyr::full_join(lldf.complete, lldf, by = c("Clay.per", "pH", "MAT.C", "MAP.mm"))
+
+#after multiplying by BD, Qmax is in units g/m3
+lldf$qmax.g.m3 = lldf$BD.g.cm3*lldf$qmax.mg.kg*(1-lldf$Coarse.per/100)
+
+return(lldf)
+}
+```
+
+###Compute profiles
+```{r}
+lldf <- format_lay(lay)
+lldf.avg <- compute_profiles(lldf)
+```
+
+###Compute profiles separating topsoils and subsoils
+```{r}
+topsoil.new <- format_lay(topsoil)
+subsoil.new <- format_lay(subsoil)
+
+lldf.topsoil <- compute_profiles(topsoil.new)
+lldf.subsoil <- compute_profiles(subsoil.new)
+```
+
+##Nice Hex Plots Function
+```{r}
+alphahex <- 0.8
+make.hex.plots <- function(data.to.plot, nbins, mins, maxs){
+pdf(file=paste0(figdir,"Figure3ad.pdf"), height=7, width=7)
+
+ggQ <- gg1+
+stat_summary_hex(data = data.to.plot, aes(x = longitude, y = latitude, z = qmax.g.kg), fun = function(z) sum(z)/length(z), alpha = alphahex, bins= nbins) +
+scale_fill_gradientn(colours = color.setting.Q, name=expression("Q"[sp]~" (g/kg)"), limits = c(mins[1],maxs[1])) +
+guides(fill = guide_colourbar(barwidth = barsize))
+
+ggK <- gg1+ 
+stat_summary_hex(data = data.to.plot, aes(x = longitude, y = latitude, z = k.L.mg), fun = function(z) sum(z)/length(z), alpha = alphahex, bins= nbins) +
+scale_fill_gradientn(colours = color.setting.K, name="k (L/mg)", limits = c(mins[2],maxs[2]), breaks = c(0.05,0.1), labels = c("0.05","0.10")) +
+guides(fill = guide_colourbar(barwidth = barsize))
+
+print(ggQ)
+print(ggK)
+dev.off()
+}
+
+make.density.plots <- function(){
+lldf.topsoil$ID <- rep("topsoil",dim(lldf.topsoil)[1])
+lldf.subsoil$ID <- rep("subsoil",dim(lldf.subsoil)[1])
+topsub <- bind_rows(lldf.topsoil,lldf.subsoil)
+
+ggQ.dens <- ggplot(topsub, aes(x=qmax.g.kg, fill=ID)) +
+  geom_density(alpha=0.3) +
+  xlab(expression("Q"[sp]~" (g/kg)")) + ylab("Density") + theme_classic()+
+  guides(fill = guide_legend(reverse = TRUE)) 
+
+ggK.dens <- ggplot(topsub, aes(x=k.L.mg, fill=ID)) + 
+  geom_density(alpha=0.3) +
+  xlab("k (L/mg)") + ylab("Density") + theme_classic()+
+  guides(fill = guide_legend(reverse = TRUE)) 
+
+ggS.dens <- ggplot(topsub, aes(x=tot.soc.kg.m3, fill=ID)) + 
+  geom_density(alpha=0.3) +
+  xlab(expression("Total SOC (kg C " ~ m^{-3} ~ ")")) + ylab("Density") + theme_classic()
+
+pdf(file=paste0(figdir,"FigureS3.pdf"),height=2.5,width=4)
+print(ggQ.dens)
+print(ggK.dens)
+print(ggS.dens)
+dev.off()
+}
+```
+
+##Plot the plots
+```{r}
+lims <- read.csv(file=paste0(datadir,"limits.csv"))
+mins <- lims$out.min
+maxs <- lims$out.max
+
+make.hex.plots(lldf.avg, 50, mins, maxs)
+make.density.plots()
+```
+
+##Summaries
+```{r}
+quantile(lldf.avg$qmax.g.kg, na.rm=T, c(.025, .5, .975))
+quantile(lldf.avg$k.L.mg, na.rm=T, c(.025, .5, .975))
+
+##How many profiles have I measured protected C for?
+length(lldf.avg$qmax.mg.kg[!is.na(lldf.avg$qmax.mg.kg)])
+length(lldf.avg$k.L.mg[!is.na(lldf.avg$k.L.mg)])
+
+length(lldf.topsoil$qmax.g.kg[!is.na(lldf.topsoil$qmax.g.kg)])
+length(lldf.subsoil$qmax.g.kg[!is.na(lldf.subsoil$qmax.g.kg)])
+length(lldf.topsoil$k.L.mg[!is.na(lldf.topsoil$k.L.mg)])
+length(lldf.subsoil$k.L.mg[!is.na(lldf.subsoil$k.L.mg)])
+topsub.labels <- c(rep("topsoil",dim(lldf.topsoil)[1]), rep("subsoil",dim(lldf.subsoil)[1]))
+topsub.df <- cbind(rbind(lldf.topsoil,lldf.subsoil),topsub.labels)
+t.test(topsub.df$qmax.g.kg ~ topsub.df$topsub.labels)
+
+quantile(lldf.topsoil$qmax.g.kg, na.rm=T, c(.025, .5, .975))
+quantile(lldf.subsoil$qmax.g.kg, na.rm=T, c(.025, .5, .975))
+
+quantile(lldf.topsoil$k.L.mg, na.rm=T, c(.025, .5, .975))
+quantile(lldf.subsoil$k.L.mg, na.rm=T, c(.025, .5, .975))
+```
+#Extrapolate Qmax and K to gridded maps
+##Load Layers
+```{r}
+load(file=paste0(datadir,"maplayers.Rdata"))
+resolution.num = 10
+```
+
+##Generate new map using relationships
+###Organize data
+```{r}
+#Stacks
+#Inputs: pH, Clay.per, BD.g.cm3, MAP.mm, MAT.C, Soil.Order
+df.stack <- as.data.frame(values(weighted.phs)) #pH units
+names(df.stack) <- c("pH")
+df.stack$Clay.per <- values(weighted.clay) #percent clay
+df.stack$BD.g.cm3 <- values(weighted.bd) #kg/dm3 or g/cm3
+df.stack$tot.soc.kg.m3 <- values(converted.soc) #kg/m3
+df.stack$MAT.C <- values(mat.sized) #Celsius
+df.stack$MAP.mm <- values(map.sized) #mm
+df.stack$Soil.Order.Int <- values(soilord) #integer value factor
+df.stack$OC.mg.kg <- 1000*values(weighted.soc2) #g/kg
+df.stack$Coarse.per <- values(weighted.cfrag) #percent volume coarse fragments
+df.stack$MAT.C2 <- values(mat.sized2)
+df.stack$MAP.mm2 <- values(map.sized2)
+df.stack$Clay.per2 <- values(clay.sized2)
+df.stack$pH2 <- values(phs.sized2)
+
+int.key <- as.data.frame(soilord@data@attributes[[1]])
+names(int.key) <- c("Soil.Order.Int","Soil.Order")
+
+df.keep <- left_join(df.stack, int.key, by=c("Soil.Order.Int"))
+df.keep$position <- 1:length(df.keep$pH)
+df.next <- df.keep %>% 
+  dplyr::filter(Soil.Order == "Alfisol" | Soil.Order == "Entisol" | Soil.Order == "Inceptisol" | Soil.Order == "Mollisol" | Soil.Order == "Spodosol" | Soil.Order == "Ultisol") %>%
+droplevels(exclude = "") 
+```
+
+###Compute and plot stack functions
+```{r}
+compute_stack <- function(df.next) {
+  
+df.stack.complete <- df.next %>%
+     tidyr::drop_na(Soil.Order.Int, Clay.per, BD.g.cm3, MAP.mm, pH, MAT.C, OC.mg.kg, Coarse.per)
+ 
+k.L.mg.stack <- exp(predict(k.rf, df.stack.complete))
+qmax.mg.kg.stack <- exp(predict(q.rf, df.stack.complete))
+
+fit.result <- as.data.frame(cbind(df.stack.complete$position, k.L.mg.stack, qmax.mg.kg.stack))
+names(fit.result) <- c("position","k.L.mg","qmax.mg.kg")
+#expand back into position
+df.scale <- left_join(df.keep, fit.result, by=c("position"))
+
+df.scale$qmax.g.kg <- df.scale$qmax.mg.kg/1000
+
+#after multiplying by BD, Qmax is in units g/m3
+df.scale$qmax.g.m3 = df.scale$BD.g.cm3*df.scale$qmax.mg.kg*(1-df.scale$Coarse.per/100)
+df.scale$qmax.kg.m3 = df.scale$qmax.g.m3/1000
+
+return(df.scale)
+ 
+}
+ 
+make_plots <- function(df.scale, mins, maxs){
+thing.to.plot.1 <- cbind(
+  df.scale$qmax.g.kg,
+  df.scale$k.L.mg, 
+  df.scale$tot.soc.kg.m3)
+plot.title.1 <- c(
+  expression("Q"[sp]~" (g/kg)"), 
+  "k (L/mg)", 
+  expression("Total SOC (kg C " ~ m^{-3} ~ ")"))
+
+for (i in 1:length(plot.title.1)){
+#copy an old raster and replace with plotted values
+plot.this <- weighted.phs
+values(plot.this) <- thing.to.plot.1[,i]
+
+plot.this.next <- as.data.frame(plot.this, xy=TRUE)
+names(plot.this.next) <- c("long","lat","value")
+
+if(i==2){
+ print(ggplot()+
+  geom_raster(data = plot.this.next, aes(x=long, y=lat, fill=value)) +
+  geom_polygon(data = wrld, aes(x=long, y = lat, group = group), fill = NA, color = "black") + 
+  coord_fixed(1.3) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"), axis.ticks = element_blank(), legend.position="bottom",legend.title=element_text(size=15), 
+    legend.text=element_text(size=12), axis.text = element_text(size=12))+
+ scale_x_continuous("", breaks = xbreaks, labels = xlabels) +
+ scale_y_continuous("", breaks = ybreaks, labels = ylabels) +
+ scale_fill_gradientn(colours = rev(terrain.colors(255)), name=plot.title.1[i], na.value = NA, limits = c(mins[i], maxs[i]), breaks = c(0.05, 0.10), labels = c("0.05","0.10")) +
+guides(fill = guide_colourbar(barwidth = barsize))) }else{
+print(ggplot()+
+  geom_raster(data = plot.this.next, aes(x=long, y=lat, fill=value)) +
+  geom_polygon(data = wrld, aes(x=long, y = lat, group = group), fill = NA, color = "black") + 
+  coord_fixed(1.3) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"), axis.ticks = element_blank(), legend.position="bottom",legend.title=element_text(size=15), 
+    legend.text=element_text(size=12), axis.text = element_text(size=12))+
+ scale_x_continuous("", breaks = xbreaks, labels = xlabels) +
+ scale_y_continuous("", breaks = ybreaks, labels = ylabels) +
+ scale_fill_gradientn(colours = rev(terrain.colors(255)), name=plot.title.1[i], na.value = NA, limits = c(mins[i], maxs[i])) +
+guides(fill = guide_colourbar(barwidth = barsize)))
+}
+}
+
+}
+```
+
+###Compute stack for uncertainty
+```{r}
+compute_stack_uncertainty <- function(df.stack.complete,q.rf.sub) {
+ 
+k.L.mg.stack <- exp(predict(k.rf, df.stack.complete))
+qmax.mg.kg.stack <- exp(predict(q.rf.sub, df.stack.complete))
+
+fit.result <- as.data.frame(cbind(df.stack.complete$position, k.L.mg.stack, qmax.mg.kg.stack, df.stack.complete$Clay.per))
+names(fit.result) <- c("position","k.L.mg","qmax.mg.kg","newClay.per")
+#expand back into position
+df.scale <- left_join(df.keep, fit.result, by=c("position"))
+
+df.scale$qmax.g.kg <- df.scale$qmax.mg.kg/1000
+
+#after multiplying by BD, Qmax is in units g/m3
+df.scale$qmax.g.m3 = df.scale$BD.g.cm3*df.scale$qmax.mg.kg*(1-df.scale$Coarse.per/100)
+df.scale$qmax.kg.m3 = df.scale$qmax.g.m3/1000
+
+glob_qmax_for_uncert <- 1e-12*sum(df.scale$qmax.kg.m3*1e6*resolution.num^2,na.rm=T) 
+
+return(glob_qmax_for_uncert)
+ 
+}
+
+df.stack.complete.repClay <- df.next %>%
+    tidyr::drop_na(Soil.Order.Int, Clay.per2, BD.g.cm3, MAP.mm, pH, MAT.C, OC.mg.kg, Coarse.per) %>%
+    dplyr::select(-c(Clay.per)) %>% 
+    dplyr::rename(Clay.per = Clay.per2)
+
+df.stack.complete.reppH <- df.next %>%
+    tidyr::drop_na(Soil.Order.Int, Clay.per, BD.g.cm3, MAP.mm, pH2, MAT.C, OC.mg.kg, Coarse.per) %>%
+    dplyr::select(-c(pH)) %>% 
+    dplyr::rename(pH = pH2)
+
+df.stack.complete.repMAT <- df.next %>%
+    tidyr::drop_na(Soil.Order.Int, Clay.per, BD.g.cm3, MAP.mm, pH, MAT.C2, OC.mg.kg, Coarse.per) %>%
+    dplyr::select(-c(MAT.C)) %>% 
+    dplyr::rename(MAT.C = MAT.C2)
+
+df.stack.complete.repMAP <- df.next %>%
+    tidyr::drop_na(Soil.Order.Int, Clay.per, BD.g.cm3, MAP.mm2, pH, MAT.C, OC.mg.kg, Coarse.per) %>%
+    dplyr::select(-c(MAP.mm)) %>% 
+    dplyr::rename(MAP.mm = MAP.mm2)
+
+uncert <- NULL
+uncert[1] <- compute_stack_uncertainty(df.stack.complete.repClay,q.rf1)
+uncert[2] <- compute_stack_uncertainty(df.stack.complete.reppH,q.rf1)
+uncert[3] <- compute_stack_uncertainty(df.stack.complete.repMAT,q.rf1)
+uncert[4] <- compute_stack_uncertainty(df.stack.complete.repMAP,q.rf1)
+
+uncert[5] <- compute_stack_uncertainty(df.stack.complete.repClay,q.rf2)
+uncert[6] <- compute_stack_uncertainty(df.stack.complete.reppH,q.rf2)
+uncert[7] <- compute_stack_uncertainty(df.stack.complete.repMAT,q.rf2)
+uncert[8] <- compute_stack_uncertainty(df.stack.complete.repMAP,q.rf2)
+
+uncert[9] <- compute_stack_uncertainty(df.stack.complete.repClay,q.rf3)
+uncert[10] <- compute_stack_uncertainty(df.stack.complete.reppH,q.rf3)
+uncert[11] <- compute_stack_uncertainty(df.stack.complete.repMAT,q.rf3)
+uncert[12] <- compute_stack_uncertainty(df.stack.complete.repMAP,q.rf3)
+
+uncert[13] <- compute_stack_uncertainty(df.stack.complete.repClay,q.rf4)
+uncert[14] <- compute_stack_uncertainty(df.stack.complete.reppH,q.rf4)
+uncert[15] <- compute_stack_uncertainty(df.stack.complete.repMAT,q.rf4)
+uncert[16] <- compute_stack_uncertainty(df.stack.complete.repMAP,q.rf4)
+
+uncert[17] <- compute_stack_uncertainty(df.stack.complete.repClay,q.rf5)
+uncert[18] <- compute_stack_uncertainty(df.stack.complete.reppH,q.rf5)
+uncert[19] <- compute_stack_uncertainty(df.stack.complete.repMAT,q.rf5)
+uncert[20] <- compute_stack_uncertainty(df.stack.complete.repMAP,q.rf5)
+
+sd(uncert)
+```
+
+###Make plots of the input layers
+```{r}
+make_input_plots <- function(df.scale, mins, maxs){
+thing.to.plot.1 <- cbind(
+  df.scale$Clay.per,
+  df.scale$pH, 
+  df.scale$Soil.Order, 
+  df.scale$MAT.C, 
+  df.scale$MAP.mm)
+plot.title.1 <- c(
+  "Clay (%)", 
+  "pH", 
+  "Soil Order",
+  "MAT (C)", 
+  "MAP (mm)")
+
+for (i in 1:length(plot.title.1)){
+#copy a raster template and replace with plotted values
+plot.this <- weighted.phs
+values(plot.this) <- thing.to.plot.1[,i]
+
+plot.this.next <- as.data.frame(plot.this, xy=TRUE)
+names(plot.this.next) <- c("long","lat","value")
+
+print(ggplot()+
+  geom_raster(data = plot.this.next, aes(x=long, y=lat, fill=value)) +
+  geom_polygon(data = wrld, aes(x=long, y = lat, group = group), fill = NA, color = "black") + 
+  coord_fixed(1.3) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"), axis.ticks = element_blank(), legend.position="bottom",legend.title=element_text(size=15), 
+    legend.text=element_text(size=12), axis.text = element_text(size=12))+
+ scale_x_continuous("", breaks = xbreaks, labels = xlabels) +
+ scale_y_continuous("", breaks = ybreaks, labels = ylabels) +
+ scale_fill_gradientn(colours = rev(terrain.colors(255)), name=plot.title.1[i], na.value = NA, limits = c(mins[i], maxs[i])) +
+guides(fill = guide_colourbar(barwidth = barsize)))
+}
+
+}
+```
+
+##Analysis
+```{r}
+df.scale <- compute_stack(df.next)
+
+pdf(file=paste0(figdir,"Figure3be.pdf"), height=7, width=7)
+make_plots(df.scale, mins, maxs)
+dev.off()
+
+pdf(file=paste0(figdir,"FigureS1abcd.pdf"), height=7, width=7)
+make_input_plots(df.scale, c(0,3.565,0,-27.57726,0), c(71.575,9.260,12,33.88745,8338.148))
+dev.off()
+
+plot.this <- weighted.phs
+values(plot.this) <- df.scale$Soil.Order
+
+temp.grid <- as.data.frame(plot.this, xy=TRUE)
+names(temp.grid) <- c("long","lat","value")
+
+pdf(file=paste0(figdir,"FigureS1e.pdf"), height=7, width=7)
+ggplot()+
+  geom_raster(data = temp.grid, aes(x=long, y=lat, fill=value)) +
+  geom_polygon(data = wrld, aes(x=long, y = lat, group = group), fill = NA, color = "black") + 
+  coord_fixed(1.3) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"), axis.ticks = element_blank(), legend.position="bottom",legend.title=element_text(size=15), 
+    legend.text=element_text(size=12), axis.text = element_text(size=12))+
+ scale_x_continuous("", breaks = xbreaks, labels = xlabels) +
+ scale_y_continuous("", breaks = ybreaks, labels = ylabels) +
+ scale_fill_discrete(name="Soil Order", na.value = NA)
+dev.off()
+
+plot.this <- weighted.phs
+values(plot.this) <- df.scale$qmax.g.kg
+plot.this.next <- as.data.frame(plot.this, xy=TRUE)
+names(plot.this.next) <- c("long","lat","value")
+
+lat.plot <- plot.this.next %>%
+  group_by(lat) %>% 
+  dplyr::summarise(q.med = median(value, na.rm=T), q.5 = quantile(value, na.rm=T, .025), q.95 = quantile(value, na.rm=T, .975))
+
+pdf(file=paste0(figdir,"Figure3c.pdf"), height=4, width=3)
+print(ggplot()+
+  geom_rect(data = lat.plot, aes(ymin=q.5, ymax=q.95, xmin=lat, xmax=lat+0.1)) +
+  geom_line(data = lat.plot, aes(y=q.med, x = lat), color = "black") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"), axis.ticks = element_blank(), axis.text = element_text(size=12))+
+ scale_x_continuous("", breaks = ybreaks, labels = ylabels) +
+  ylab(expression(Q[sp]~ "(g/kg)")) +
+  coord_flip())
+dev.off()
+```
+
+##Summaries
+```{r}
+get_global_summaries <- function(df.scale) {
+#get global qmax estimate
+glob_qmax <- 1e-12*sum(df.scale$qmax.kg.m3*1e6*resolution.num^2,na.rm=T) #convert kg/m2 to 1m to kg/10km2 (1000m*1000m*10*10/km2) #kg to gigatonnes
+
+#get total soc in the 6 soil orders
+df.scale.drops <- df.scale %>%
+    tidyr::drop_na(qmax.kg.m3)
+glob_total_SOC_in_6_orders = sum(df.scale.drops$tot.soc.kg.m3*1e6*resolution.num^2,na.rm=T)*1e-12
+
+outsummary = c(glob_qmax, glob_total_SOC_in_6_orders)
+names(outsummary) =  c("glob_qmax", "glob_total_SOC_in_6_orders")
+return(outsummary)
+
+}
+
+get_global_summaries(df.scale)
+```
+
+#Calculate shared min and max limits
+```{r,eval=F}
+#names
+names <- c("qmax","kaff","totalSOC")
+
+#plot range summaries for lldf.avg, lldf.DOC.low, lldf.DOC.high
+point <- cbind(lldf.avg$qmax.g.kg,
+               lldf.avg$k.L.mg,
+               lldf.avg$tot.soc.kg.m3
+               )
+
+#plot range summaries for df.scale, df.lowDOC, df.highDOC
+map <- cbind(df.scale$qmax.g.kg,
+             df.scale$k.L.mg,
+             df.scale$tot.soc.kg.m3
+             )
+
+out.min = out.max = NULL
+
+for (i in 1:ncol(point)){
+out.min[i] <- min(range(point[,i], na.rm=T)[1],range(map[,i], na.rm=T)[1])
+out.max[i] <- max(range(point[,i], na.rm=T)[2],range(map[,i], na.rm=T)[2])
+}
+
+lims <- as.data.frame(cbind(names, out.min, out.max))
+lims$out.min <- as.numeric(as.character(lims$out.min))
+lims$out.max <- as.numeric(as.character(lims$out.max))
+
+write.csv(lims, file=paste0(datadir,"limits.csv"))
+```
+
+
+#Timer
+```{r}
+master.end.time <- Sys.time()
+master.end.time - master.start.time
+```
+
+#Soil order plots and summaries
+```{r}
+quantile(bigdf$Qmax.mg.kg, na.rm=T, c(.25, .5, .75, .9))
+
+pdf(file=paste0(figdir,"FigureS2ab.pdf"), width=6, height=3.5)
+ggplot(bigdf, aes(x=bigdf$Soil.Order, y=bigdf$Qmax.mg.kg/1000)) + geom_violin() + geom_boxplot(width=0.1, fill="black") + stat_summary(fun.y=median, geom="point", fill="white", shape=21, size=2.5) +
+xlab("Soil Order") +
+ylab(expression(Q[sp]~ "(g/kg)"))
+
+ggplot(bigdf, aes(x=bigdf$Soil.Order, y=bigdf$k.L.mg)) + geom_violin() + geom_boxplot(width=0.1, fill="black") + stat_summary(fun.y=median, geom="point", fill="white", shape=21, size=2.5) +
+xlab("Soil Order") +
+ylab(expression(k~ "(L/mg)"))
+
+dev.off()
+
+pdf(file=paste0(figdir,"FigureS2ab_inset.pdf"), width=4, height=1.5)
+
+ggplot(bigdf, aes(x=bigdf$Soil.Order, y=bigdf$Qmax.mg.kg/1000)) + geom_violin() + geom_boxplot(width=0.1, fill="black") + stat_summary(fun.y=median, geom="point", fill="white", shape=21, size=2.5) +
+xlab("Soil Order") +
+ylab(expression(Q[sp]~ "(g/kg)")) +
+ylim(0,5)
+
+ggplot(bigdf, aes(x=bigdf$Soil.Order, y=bigdf$k.L.mg)) + geom_violin() + geom_boxplot(width=0.1, fill="black") + stat_summary(fun.y=median, geom="point", fill="white", shape=21, size=2.5) +
+xlab("Soil Order") +
+ylab(expression(k~ "(L/mg)")) +
+ylim(0,0.3)
+
+dev.off()
+```
+
+##Relationship between Qmax and TotalSOC
+```{r}
+fit <- summary(lm(df.scale$tot.soc.kg.m3~df.scale$qmax.g.m3))
+sqrt(fit$r.squared)
+```
+

@@ -1,0 +1,759 @@
+---
+title: "Prepare_data_github"
+author: "Rose Abramoff"
+date: "7/7/2020"
+output: html_document
+---
+
+#Load libraries
+```{r}
+rm(list=ls())
+
+library(readxl)
+library(dplyr)
+library(drc)
+library(rgdal)
+library(raster)
+
+#set path to where figures should be output and where data are stored
+figdir = "/Users/rzabramoff/Dropbox (Climate)/LSCE work files/Documents/Qmax/"
+datadir <- "/Users/rzabramoff/Dropbox (Climate)/LSCE work files/Data/"
+```
+
+#Prep sorption data
+##Read in and process datasets
+###Mayes2012
+```{r}
+m1.df <- read_excel(paste0(datadir,"Melanie_Mayes/mayes2012sorp.xlsx"))
+m1.df <- m1.df[,c("Soil Order", "Soil Series", "Horizon", "Qmax (mg kg-1)", "k\r\n(L mg-1)", "Clay\r\n(%)", "Fe\r\n(g kg-1)", "pH","TOC\r\n(mg kg-1)")]
+names(m1.df) <- c("Soil.Order", "Soil.Series", "Horizon", "Qmax.mg.kg", "k.L.mg", "Clay.per", "Fed.g.kg", "pH","OC.mg.kg")
+m1.df <- m1.df[m1.df$Horizon!="Avg",]
+m1.df$ID <- paste0(m1.df$Soil.Series,"BREAK", m1.df$Horizon)
+
+nrcs <- read.csv(paste0(datadir,"Melanie_Mayes/latlong_NRCS_database.csv"))
+m1.df <- left_join(m1.df, nrcs, by="Soil.Series")
+
+m2.df <- read_excel(paste0(datadir,"Melanie_Mayes/isotherm_shape_comparison-formatted.xls"))
+
+m2.df <- m2.df %>%
+  dplyr::rename(
+    Soil.Series = Series
+    )
+m2.df$ID <- paste0(m2.df$Soil.Series,"BREAK", m2.df$Horizon)
+
+mayes.l.kg = 60 #60L/kg
+thistab <- NULL
+thistab <- matrix(nrow=length(unique(m2.df$ID)), ncol=9)
+
+#Fit Langmuir
+for(i in 1:length(unique(m2.df$ID))){
+   tryCatch({
+RE = m2.df[m2.df$ID==unique(m2.df$ID)[i],]$`Sorbed per gram` #mg/kg
+Xf = m2.df[m2.df$ID==unique(m2.df$ID)[i],]$`Equilibrium DOC` #mg/L
+
+m.fit <- drm(RE ~ Xf, fct = MM.2())
+cor <- cor(RE,predict(m.fit))
+this <- summary(m.fit)
+thistab[i,] <- c(this$coefficients,cor)
+plot(Xf, RE)
+lines(Xf, predict(m.fit))
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+thistab <- as.data.frame(thistab)
+names(thistab) <- c("EstimateQmax","Estimate1.kaff","Std.ErrorQmax","Std.Error1.kaff","tvalueQmax","tvalue1.kaff","PrQmax","Pr1.kaff","cor")
+
+#Set non-significant values to NA
+thistab$EstimateQmax[which(thistab$PrQmax > 0.05)] <- NA
+thistab$Estimate1.kaff[which(thistab$Pr1.kaff > 0.05)] <- NA
+thistab$PrQmax[which(thistab$PrQmax > 0.05)] <- NA
+thistab$Pr1.kaff[which(thistab$Pr1.kaff > 0.05)] <- NA
+
+thistab$ID <- unique(m2.df$ID)
+for (i in 1:dim(thistab)[1]){
+thistab$Soil.Series[i] <- strsplit(thistab$ID[i], "BREAK")[[1]][1]
+thistab$Horizon[i] <- strsplit(thistab$ID[i], "BREAK")[[1]][2]
+}
+
+m3.df <- full_join(m1.df, thistab, by = c('ID','Soil.Series','Horizon'))
+m3.df$Dataset <- rep("Mayes",length(dim(m3.df)[1]))
+m3.df$Latitude <- as.numeric(m3.df$Latitude)
+m3.df$Longitude <- as.numeric(m3.df$Longitude)
+
+#Remove outlier
+m3.df$EstimateQmax[m3.df$EstimateQmax>100000] <- NA
+```
+
+###Kothawala
+```{r}
+ko1.df <- read_excel(paste0(datadir,"Dolly_Kothawala/All PhD Raw Data.xlsx"))
+
+ko.site <- read_excel(paste0(datadir,"Dolly_Kothawala/Dolly_site_key.xlsx"))
+ko1.df <- left_join(ko1.df, ko.site, by=c("Province","Location","Dominant Tree"))
+
+ko1.df <- ko1.df[,c("SoilID","Province","Location","Bulk Soil Type","Soil Horizon","Langmuir (Xf) Qmax mg/L","Langmuir (Xf) k","Soil pH (CaCl2)","% Clay","Al-ox (mg/g)","Al-cit (mg/g)","Al-ph (mg/g)","Fe-ox (mg/g)","Fe-cit (mg/g)","Fe-Ph (mg/g)","Ca cmol(+)/kg","C g/kg","% Silt","% Sand","Lat_N","Long_W","MAT_C","MAP_mm","Elevation_m","Desorption (mg DOC kg-1)")]
+
+ko1.df$`C g/kg`<- ko1.df$`C g/kg`*1000 #convert to mg/kg (units renamed below)
+ko1.df$Long_W <- -ko1.df$Long_W #convert from W to decimal (N+,E+, S-,W-)
+ko1.df$MAT_C <- as.numeric(ko1.df$MAT_C)
+ko1.df$MAP_mm <- as.numeric(ko1.df$MAP_mm)
+
+names(ko1.df) <- c("SoilID","Province","Location","Soil.Series","Horizon","Qmax.mg.kg","k.L.mg", "pH","Clay.per","Alo.g.kg","Ald.g.kg","Alp.g.kg","Feo.g.kg","Fed.g.kg","Fep.g.kg","Caex.cmol.kg","OC.mg.kg","Silt.per","Sand.per","Latitude","Longitude", "MAT.C", "MAP.mm", "Elevation.m","Reportedb.mg.kg")
+ko1.df$Reportedb.mg.kg <- -ko1.df$Reportedb.mg.kg
+ko1.df$Dataset <- rep("Kothawala",length(dim(ko1.df)[1]))
+koth.l.kg <- 10 #10L/kg
+
+ko2.df <- read_excel(paste0(datadir,"Dolly_Kothawala/All Raw Isotherm Data for Rose_cleaned.xlsx"))
+
+ko2.df$ID <- paste0(ko2.df$SoilID,"BREAK", ko2.df$Replicate)
+
+thistab <- NULL
+thistab <- matrix(nrow=length(unique(ko2.df$ID)), ncol=9+4)
+
+#Fit Langmuir
+for(i in 1:length(unique(ko2.df$ID))){
+   tryCatch({
+RE = ko2.df[ko2.df$ID==unique(ko2.df$ID)[i],]$`RE: Amount Adsorbed (mg C/kg)` #mg/kg
+Xf = ko2.df[ko2.df$ID==unique(ko2.df$ID)[i],]$`Xf: Final Concentration (mg C/kg)`/koth.l.kg #mg/L
+
+m.fit <- drm(RE ~ Xf, fct = MM.3())
+cor <- cor(RE,predict(m.fit))
+this <- summary(m.fit)
+thistab[i,] <- c(this$coefficients,cor)
+plot(Xf, RE)
+lines(Xf, predict(m.fit))
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+thistab <- as.data.frame(thistab)
+names(thistab) <- c("Estimateb","EstimateQmax","Estimate1.kaff","Std.Errorb","Std.ErrorQmax","Std.Error1.kaff","tvalueb","tvalueQmax","tvalue1.kaff","Prb","PrQmax","Pr1.kaff","cor")
+
+#Set non-significant values to NA
+thistab$EstimateQmax[which(thistab$PrQmax > 0.05)] <- NA
+thistab$Estimate1.kaff[which(thistab$Pr1.kaff > 0.05)] <- NA
+thistab$PrQmax[which(thistab$PrQmax > 0.05)] <- NA
+thistab$Pr1.kaff[which(thistab$Pr1.kaff > 0.05)] <- NA
+
+thistab$ID <- unique(ko2.df$ID)
+for (i in 1:dim(thistab)[1]){
+thistab$SoilID[i] <- strsplit(thistab$ID[i], "BREAK")[[1]][1]
+thistab$Replicate[i] <- strsplit(thistab$ID[i], "BREAK")[[1]][2]
+}
+thistab$SoilID <- as.numeric(thistab$SoilID)
+
+ko3.df <- full_join(ko1.df, thistab, by = c('SoilID'))
+ko3.df$Dataset <- rep("Kothawala",length(dim(ko3.df)[1]))
+
+ko3.df$EstimateQmax[ko3.df$EstimateQmax<0] <- NA
+
+#Use reported estimates of b
+ko3.df$Estimateb <- ko3.df$Reportedb.mg.kg
+```
+###Jagadamma PlosOne
+```{r}
+#Averaged over the 5 compounds: d-glucose, l-alanine, salicylic acid, sinapyl alcohol, oxalic acid
+j1.df <- read_excel(paste0(datadir,"Sindhu_Jagadamma_PlosOne/JagadammaPlosOne.xlsx"))
+j1.df <- j1.df %>%
+  group_by(soil.series) %>% 
+  dplyr::rename(
+    Soil.Order = soil.order,
+    Location = location,
+    Soil.Series = soil.series,
+    TOC.mg.kg = TOC.mgkg
+    ) %>%
+  dplyr::summarise(Qmax.mg.kg = mean(Qmax.nonsterile, na.rm=T), k.L.mg = mean(K.nonsterile,na.rm=T), Clay.per = mean(`%clay`), Fed.g.kg = mean(Fe.mgg), pH = mean(pH), TOC.mg.kg=mean(TOC.mg.kg))
+
+j1.df$Dataset <- rep("Jagadamma",length(dim(j1.df)[1]))
+
+j1.df <- left_join(j1.df, nrcs, by="Soil.Series")
+
+j2.df <- read_excel(paste0(datadir,"Sindhu_Jagadamma_PlosOne/LAngmuir_data_and_equations_from_TOC_All_soils-formatted.xlsx"))
+j2.df$ID <- paste0(j2.df$Series,"BREAK",j2.df$Compound)
+
+jag.l.kg = 60 #60L/kg
+thistab <- NULL
+thistab <- matrix(nrow=length(unique(j2.df$ID)), ncol=9)
+
+#Fit Langmuir
+for(i in 1:length(unique(j2.df$ID))){
+   tryCatch({
+RE = j2.df[j2.df$ID==unique(j2.df$ID)[i],]$Sorbed.mg.kg #mg/kg
+Xf = j2.df[j2.df$ID==unique(j2.df$ID)[i],]$Equilibrium.DOC.mg.L #mg/L
+
+m.fit <- drm(RE ~ Xf, fct = MM.2())
+cor <- cor(RE,predict(m.fit))
+this <- summary(m.fit)
+thistab[i,] <- c(this$coefficients,cor)
+plot(Xf, RE)
+lines(Xf, predict(m.fit))
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+thistab <- as.data.frame(thistab)
+names(thistab) <- c("EstimateQmax","Estimate1.kaff","Std.ErrorQmax","Std.Error1.kaff","tvalueQmax","tvalue1.kaff","PrQmax","Pr1.kaff","cor")
+
+#Set non-significant values to NA
+thistab$EstimateQmax[which(thistab$PrQmax > 0.05)] <- NA
+thistab$Estimate1.kaff[which(thistab$Pr1.kaff > 0.05)] <- NA
+thistab$PrQmax[which(thistab$PrQmax > 0.05)] <- NA
+thistab$Pr1.kaff[which(thistab$Pr1.kaff > 0.05)] <- NA
+
+thistab$ID <- unique(j2.df$ID)
+
+#break back out series and compound from ID
+for (i in 1:dim(thistab)[1]){
+thistab$Soil.Series[i] <- strsplit(thistab$ID[i], "BREAK")[[1]][1]
+thistab$compound[i] <- strsplit(thistab$ID[i], "BREAK")[[1]][2]
+}
+
+#Averaging over compounds
+thistab <- thistab  %>%
+  group_by(Soil.Series) %>%
+  dplyr::summarise(EstimateQmax = mean(EstimateQmax, na.rm=T), Estimate1.kaff = mean(Estimate1.kaff,na.rm=T))
+
+j3.df <- full_join(j1.df, thistab, by = 'Soil.Series')
+j3.df$Latitude <- as.numeric(j3.df$Latitude)
+j3.df$Longitude <- as.numeric(j3.df$Longitude)
+```
+
+###Feng
+```{r}
+w1.df <- read_excel(paste0(datadir,"/Wenting_Feng/DOM-FengW-formatted.xlsx"))
+w1.df$TOC.mg.kg <- w1.df$toc.mg.g*1000
+
+w1.df <- w1.df %>%
+  dplyr::rename( 
+    Soil.Series = soil_name,
+    Horizon = horizon,
+    Depth.cm = depth.cm,
+    Clay.per = "clay%",
+    Fed.g.kg = fe.g.kg,
+    pH = ph_cacl2,
+    k.L.mg = k.Lmg,
+    Qmax.mg.kg = st.mg.kg,
+    Order = order
+    )
+w1.df$Sorbed.mg.L <- w1.df$`Average of DOC before sorption (mgC/L)` - w1.df$`Average of DOC after sorption (mgC/L)`
+
+w1.df <- left_join(w1.df, nrcs, by="Soil.Series")
+
+feng.l.kg = 400 #400L/kg
+thistab <- NULL
+thistab <- matrix(nrow=length(unique(w1.df$Soil.Series)), ncol=9+1)
+
+#Fit Langmuir
+for(i in 1:length(unique(w1.df$Soil.Series))){
+   tryCatch({
+RE = w1.df[w1.df$Soil.Series==unique(w1.df$Soil.Series)[i],]$Sorbed.mg.L #mg/L
+Xf = w1.df[w1.df$Soil.Series==unique(w1.df$Soil.Series)[i],]$`Average of DOC before sorption (mgC/L)`*feng.l.kg #mg/kg
+
+m.fit <- drm(RE ~ Xf, fct = MM.2())
+cor <- cor(RE,predict(m.fit))
+this <- summary(m.fit)
+thistab[i,] <- c(this$coefficients,cor,RE[1])
+plot(Xf, RE)
+lines(Xf, predict(m.fit))
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+thistab <- as.data.frame(thistab)
+names(thistab) <- c("EstimateQmax","Estimate1.kaff","Std.ErrorQmax","Std.Error1.kaff","tvalueQmax","tvalue1.kaff","PrQmax","Pr1.kaff","cor","Estimateb")
+
+#Set non-significant values to NA
+thistab$EstimateQmax[which(thistab$PrQmax > 0.05)] <- NA
+thistab$Estimate1.kaff[which(thistab$Pr1.kaff > 0.05)] <- NA
+thistab$PrQmax[which(thistab$PrQmax > 0.05)] <- NA
+thistab$Pr1.kaff[which(thistab$Pr1.kaff > 0.05)] <- NA
+
+thistab$Soil.Series <- c("Drummer","San Ysidro","Stroud forest","Towaliga")
+
+w2.df <- full_join(w1.df, thistab, by = c('Soil.Series'))  
+
+w2.df$Latitude <- as.numeric(w2.df$Latitude)
+w2.df$Longitude <- as.numeric(w2.df$Longitude)
+
+w2.df <- w2.df %>%
+  group_by(Soil.Series) %>%
+     dplyr::summarise(Qmax.mg.kg = mean(Qmax.mg.kg, na.rm=T), k.L.mg = mean(k.L.mg,na.rm=T), Clay.per = mean(Clay.per), Fed.g.kg = mean(Fed.g.kg), pH = mean(pH), TOC.mg.kg=mean(TOC.mg.kg), Latitude=mean(Latitude), Longitude=mean(Longitude), EstimateQmax = mean(EstimateQmax), Estimate1.kaff = mean(Estimate1.kaff), Estimateb = mean(Estimateb))
+w2.df$Dataset <- rep("Feng",length(dim(w2.df)[1]))
+```
+
+###Kaiser
+```{r}
+kai1.df <- read_excel(paste0(datadir,"/Klaus_Kaiser/Boden_condensed-formatted.xlsx"))
+kai1.df$OC <- kai1.df$OC*1000
+names(kai1.df) <- c("SoilID","Soil.Series","Horizon","Depth.cm","Clay.per","pH","Fed.g.kg","Alo.g.kg","Feo.g.kg","BD.g.cm3","OC.mg.kg","Latitude","Longitude","MAT.C","MAP.mm")
+kai1.df$Dataset <- rep("Kaiser",length(dim(kai1.df)[1]))
+
+kai2.df <- read_excel(paste0(datadir,"/Klaus_Kaiser/Sorption-Batch1-34_total_DOC-formatted.xlsx"))
+kai2.df$ID <- paste0(kai2.df$Profile, kai2.df$Horizon)
+
+kai.l.kg <- 5 #5L/kg
+thistab <- NULL
+thistab <- matrix(nrow=length(unique(kai2.df$ID)), ncol=9+1)
+
+#Fit Langmuir
+for(i in 1:length(unique(kai2.df$ID))){
+   tryCatch({
+RE = kai2.df[kai2.df$ID==unique(kai2.df$ID)[i],]$Sorbed.mmol.kg*12.01 # <- mmol/kg * mg/mmol = mg/kg
+Xf = kai2.df[kai2.df$ID==unique(kai2.df$ID)[i],]$Eq.conc.mg.l #mg/L
+Estimateb = RE[1]
+Xf = Xf - Xf[1]
+RE = RE - RE[1]
+
+m.fit <- drm(RE ~ Xf, fct = MM.2())
+cor <- cor(RE,predict(m.fit))
+this <- summary(m.fit)
+thistab[i,] <- c(this$coefficients,cor,Estimateb)
+plot(Xf, RE)
+lines(Xf, predict(m.fit))
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+thistab <- as.data.frame(thistab)
+names(thistab) <- c("EstimateQmax","Estimate1.kaff","Std.ErrorQmax","Std.Error1.kaff","tvalueQmax","tvalue1.kaff","PrQmax","Pr1.kaff","cor","Estimateb")
+
+#Set non-significant values to NA
+thistab$EstimateQmax[which(thistab$PrQmax > 0.05)] <- NA
+thistab$Estimate1.kaff[which(thistab$Pr1.kaff > 0.05)] <- NA
+thistab$PrQmax[which(thistab$PrQmax > 0.05)] <- NA
+thistab$Pr1.kaff[which(thistab$Pr1.kaff > 0.05)] <- NA
+
+kai1.df$EstimateQmax <- thistab$EstimateQmax
+kai1.df$Estimate1.kaff <- thistab$Estimate1.kaff
+kai1.df$Estimateb <- thistab$Estimateb
+```
+
+###Combine into one table
+```{r}
+#Calculated and reported variables together
+bigdf <- bind_rows(m3.df, ko3.df, j3.df, w2.df, kai1.df)
+bigdf$Estimate.kaff <- 1/bigdf$Estimate1.kaff
+
+bigdf$BD.g.cm3 <- as.numeric(bigdf$BD.g.cm3)
+
+bigdf$L.kg <- rep(1, dim(bigdf)[1])
+bigdf$L.kg[bigdf$Dataset=="Mayes"] <- mayes.l.kg
+bigdf$L.kg[bigdf$Dataset=="Kothawala"] <- koth.l.kg
+bigdf$L.kg[bigdf$Dataset=="Feng"] <- feng.l.kg
+bigdf$L.kg[bigdf$Dataset=="Jagadamma"] <- jag.l.kg
+bigdf$L.kg[bigdf$Dataset=="Kaiser"] <- kai.l.kg
+
+bigdf$Qmax.mg.kg.reported <- bigdf$Qmax.mg.kg
+bigdf$k.L.mg.reported <- bigdf$k.L.mg
+
+##use reported values as default
+bigdf$Qmax.mg.kg <- ifelse(is.na(bigdf$Qmax.mg.kg.reported),bigdf$EstimateQmax,bigdf$Qmax.mg.kg.reported)
+bigdf$k.L.mg <- ifelse(is.na(bigdf$k.L.mg.reported),bigdf$Estimate.kaff,bigdf$k.L.mg.reported)
+bigdf$Source.qmax <- ifelse(is.na(bigdf$Qmax.mg.kg.reported),"Fitted","Reported")
+bigdf$Source.k <- ifelse(is.na(bigdf$k.L.mg.reported),"Fitted","Reported")
+print("reported")
+
+#add in soil taxonomy to print data frame as a supplementary table
+soil.tax <-  read_excel(paste0(datadir,"soil_taxonomy_key.xlsx"))
+print.df <- full_join(soil.tax, bigdf, by="Soil.Series")
+print.df <- print.df %>%
+  dplyr::select(-c(Soil.Order.y, Soil.Series, ID, EstimateQmax, Estimate1.kaff, Std.ErrorQmax, Std.Error1.kaff, tvalueQmax, tvalue1.kaff, PrQmax, Pr1.kaff, cor, SoilID, Province, Location, TOC.mg.kg, Estimate.kaff, Qmax.mg.kg.reported, k.L.mg.reported)) %>%
+  dplyr::filter(!is.na(Qmax.mg.kg) | !is.na(k.L.mg)) %>%
+  dplyr::rename(Soil.Order = Soil.Order.x) %>%
+  dplyr::mutate(Soil.Order = ifelse(Soil.Order=="Luvisol", "Alfisol", Soil.Order)) %>%
+  dplyr::mutate(Soil.Order = ifelse(Soil.Order=="Brunisol", "Inceptisol", Soil.Order)) %>%
+  dplyr::mutate(Soil.Order = ifelse(Soil.Order=="Podzol" | Soil.Order=="Spodosols", "Spodosol", Soil.Order)) %>%
+  dplyr::mutate(Soil.Order = ifelse(Soil.Order=="Messisol" | Soil.Order=="Gleysol" , NA , Soil.Order)) %>%
+  dplyr::select(-c(X,Std.Errorb,tvalueb,Prb,Replicate))
+                
+write.csv(print.df, file=paste0(datadir,"printdf.csv"))
+
+##count non-NA values
+length(which(!is.na(bigdf$Qmax.mg.kg)))
+length(which(!is.na(bigdf$k.L.mg)))
+
+#count non-NA Mayes
+a <- length(unique(bigdf[bigdf$Dataset=="Mayes" & !is.na(bigdf$Qmax.mg.kg),]$Soil.Series))
+b <- length(unique(bigdf[bigdf$Dataset=="Mayes" & !is.na(bigdf$k.L.mg),]$Soil.Series))
+#count non-NA Kaiser
+c <- length(unique(bigdf[bigdf$Dataset=="Kaiser" & !is.na(bigdf$Qmax.mg.kg),]$SoilID))
+d <- length(unique(bigdf[bigdf$Dataset=="Kaiser" & !is.na(bigdf$k.L.mg),]$SoilID))
+
+mean(bigdf$k.L.mg/bigdf$L.kg,na.rm=T) #kg/mg
+summary(bigdf$k.L.mg/(bigdf$L.kg*bigdf$BD.g.cm3),na.rm=T) 
+mean(bigdf$k.L.mg/bigdf$L.kg,na.rm=T)/mean(bigdf$BD.g.cm3,na.rm=T) 
+#kg/mg * cm3/g = m3/g
+
+e <- length(bigdf[bigdf$Source.qmax=="Fitted" & !is.na(bigdf$Qmax.mg.kg),]$Qmax.mg.kg)
+f <- length(bigdf[bigdf$Source.qmax=="Reported" & !is.na(bigdf$Qmax.mg.kg),]$Qmax.mg.kg)
+
+g <- length(bigdf[bigdf$Source.k=="Fitted" & !is.na(bigdf$k.L.mg),]$k.L.mg)
+h <- length(bigdf[bigdf$Source.k=="Reported" & !is.na(bigdf$k.L.mg),]$k.L.mg)
+
+e+f
+g+h
+```
+
+##Nice comparison plots
+```{r}
+bignum = 1e20
+
+pdf(file=paste0(figdir,"FigureS5.pdf"), width=7, height=4)
+par(mfrow=c(1,2))
+plot(bigdf$EstimateQmax, bigdf$Qmax.mg.kg.reported, ylim=c(0,7000), xlim=c(0,7000), xlab="Recalculated "~Q[sp]~ "(mg/kg)", ylab="Reported "~Q[sp]~ "(mg/kg)")
+lines(c(0,bignum),c(0,bignum), lty=2)
+plot(bigdf$Estimate.kaff, bigdf$k.L.mg.reported, ylim=c(0,0.3), xlim=c(0,0.3), xlab="Recalculated "~k~ "(L/mg)", ylab="Reported "~k~ "(L/mg)")
+lines(c(0,bignum),c(0,bignum), lty=2)
+dev.off()
+
+rx1 <- lm(bigdf$Qmax.mg.kg.reported ~ bigdf$EstimateQmax)
+rx2 <- lm(bigdf$k.L.mg.reported ~ bigdf$Estimate.kaff)
+
+summary(rx1)
+summary(rx2)
+
+#regression diagnostics
+plot(rx1)
+plot(rx2)
+
+bigdf$Estimateb <- -bigdf$Estimateb
+summary(bigdf$Estimateb)
+quantile(bigdf$Estimateb/1000, na.rm=T, c(.025, .5, .975)) #g/kg
+summary(lm(bigdf$OC.mg.kg ~ bigdf$Estimateb))
+plot(lm(bigdf$OC.mg.kg ~ bigdf$Estimateb))
+plot(bigdf$OC.mg.kg, -bigdf$Estimateb)
+
+dim(bigdf[!is.na(bigdf$Estimateb),])
+```
+
+
+#Prep profile data
+##Read in WoSIS Data
+```
+organic C: lay$orgc_value_avg
+bulk density: lay$bdws_value_avg
+clay: lay$clay_value_avg
+soil order: df$cstx_order_name
+WRC: lay$wrvo_value_avg
+WRG:lay$wrgr_value_avg
+coarse fragments volumetric: lay$cfvo_value_avg
+```
+```{r}
+df <- read.table("/Users/rzabramoff/Dropbox (Climate)/External Collaborations/ISCN/WoSIS_2016_July/wosis_201607_profiles.txt", sep="\t", header=T, na.strings=c(""))
+df$profile_id <- as.character(df$profile_id)
+att <- read.table("/Users/rzabramoff/Dropbox (Climate)/External Collaborations/ISCN/WoSIS_2016_July/wosis_201607_attributes.txt", sep="\t", header=T)
+lay <- read.table("/Users/rzabramoff/Dropbox (Climate)/External Collaborations/ISCN/WoSIS_2016_July/wosis_201607_layers.txt", sep="\t", header=T, fill=T)
+lay$profile_id <- as.character(lay$profile_id)
+
+save(df, att, lay, file=paste0(datadir,"wosis.Rdata"))
+```
+
+##Add climate covariates
+```{r}
+map <- raster(paste0(datadir,"WorldClim/wc2.0_30s_bio/wc2.0_bio_30s_12.tif"))
+mat <- raster(paste0(datadir,"WorldClim/wc2.0_30s_bio/wc2.0_bio_30s_01.tif"))
+
+map.points <- cbind(df$longitude, df$latitude)
+start.time <- Sys.time() #2 mins
+df$MAT.C <- raster::extract(mat, map.points)
+df$MAP.mm <- raster::extract(map, map.points)
+end.time <- Sys.time()
+end.time - start.time
+
+save(mat, map, map.points, df, file=paste0(datadir,"climatevars.Rdata"))
+```
+
+##Check which profiles have identical pH and clay with depth
+```{r}
+lay$top.num <- as.numeric(as.character(lay$top))
+lay$bottom.num <- as.numeric(as.character(lay$bottom))
+
+lay$layer[lay$bottom.num<30] <- "topsoil"
+lay$layer[lay$bottom.num>30 & lay$bottom.num<100] <- "subsoil"
+
+depdf <- lay %>%
+        dplyr::group_by(profile_id, layer)%>%
+        dplyr::summarise(bulk.density = mean(bdws_value_avg, na.rm=T),
+                  per.clay = mean(clay_value_avg, na.rm=T),
+                  ph.cacl = mean(phca_value_avg, na.rm=T),
+                  tot.soc = mean(orgc_value_avg, na.rm=T),
+                  coarse.frag = mean(cfvo_value_avg, na.rm=T))
+
+#function
+zero_range <- function(x, tol = .Machine$double.eps ^ 0.5) {
+  if (length(x) == 1) return(TRUE)
+  x <- range(x) / mean(x)
+  isTRUE(all.equal(x[1], x[2], tolerance = tol))
+}
+
+completeFun <- function(data, desiredCols) {
+  completeVec <- complete.cases(data[, desiredCols])
+  return(data[completeVec, ])
+}
+
+depdf <- as.data.frame(completeFun(depdf, "layer"))
+
+deps <- unique(depdf$profile_id)
+same.clay = same.ph = vector(length=length(deps))
+#query whether for each profile, all depths are the same or not
+start.time <- Sys.time()
+for(i in 1:length(deps)){
+same.clay[i] <- zero_range(depdf[depdf$profile_id==deps[i],]$per.clay)
+same.ph[i] <- zero_range(depdf[depdf$profile_id==deps[i],]$ph.cacl)
+}
+end.time <- Sys.time()
+end.time - start.time
+ summary(same.clay)
+ summary(same.ph)
+ indexdf <- as.data.frame(cbind(deps, same.clay, same.ph))
+ names(indexdf) <- c("profile_id","same.clay","same.ph")
+ 
+save(indexdf, file=paste0(datadir,"indexdf.Rdata"))
+```
+
+#Prep gridded data
+##Settings
+```{r}
+##Imports one layer at a time
+depths = c(0, 5, 15, 30, 60, 100, 200)
+resolution = "10km"
+```
+##Generate a weighted average of depth to 1m
+###Coarse Fragments: Read in data and generate a weighted average of depths
+```{r}
+setwd(paste0(datadir,"SoilGrids/CoarseFrag/"))
+grd.list <- list.files(pattern=resolution)
+cfrag1 <- stack(grd.list)
+
+temp.cfrag = c(cfrag1[[1]], cfrag1[[2]], cfrag1[[3]], cfrag1[[4]], cfrag1[[5]], cfrag1[[6]], cfrag1[[7]])
+
+rm(cfrag1, grd.list)
+
+#generates a weighted average using the trapezoidal rule and converts from percentage to fraction
+start_time <- Sys.time()
+weighted.cfrag = ((1/depths[6]) * ( (temp.cfrag[[1]]+temp.cfrag[[2]])*(depths[2]-depths[1]) +
+(temp.cfrag[[2]]+temp.cfrag[[3]])*(depths[3]-depths[2]) +
+(temp.cfrag[[3]]+temp.cfrag[[4]])*(depths[4]-depths[3]) +
+(temp.cfrag[[4]]+temp.cfrag[[5]])*(depths[5]-depths[4]) +
+(temp.cfrag[[5]]+temp.cfrag[[6]])*(depths[6]-depths[5]) )*0.5)*0.01
+end_time <- Sys.time()
+end_time - start_time
+
+plot(weighted.cfrag)
+
+#clean
+rm(temp.cfrag)
+```
+
+###pH: Read in data and generate a weighted average of depths
+```{r}
+setwd(paste0(datadir,"SoilGrids/pH"))
+grd.list <- list.files(pattern=resolution)
+ph1 <- stack(grd.list)
+
+temp.phs = c(ph1[[1]], ph1[[2]], ph1[[3]], ph1[[4]], ph1[[5]], ph1[[6]], ph1[[7]])
+
+rm(ph1, grd.list)
+
+#pH is x10, this is in the documentation
+#generates a weighted average using the trapezoidal rule and also converts to regular pH units
+start_time <- Sys.time()
+weighted.phs = ((1/depths[6]) * ( (temp.phs[[1]]+temp.phs[[2]])*(depths[2]-depths[1]) +
+(temp.phs[[2]]+temp.phs[[3]])*(depths[3]-depths[2]) +
+(temp.phs[[3]]+temp.phs[[4]])*(depths[4]-depths[3]) +
+(temp.phs[[4]]+temp.phs[[5]])*(depths[5]-depths[4]) +
+(temp.phs[[5]]+temp.phs[[6]])*(depths[6]-depths[5]) )*0.5)*0.1
+end_time <- Sys.time()
+end_time - start_time
+
+plot(weighted.phs)
+
+#clean
+rm(temp.phs)
+```
+
+
+###Clay: Read in data and generate a weighted average of depths
+```{r}
+setwd(paste0(datadir,"SoilGrids/Clay"))
+grd.list <- list.files(pattern=resolution)
+clay1 <- stack(grd.list)
+
+temp.clay = c(clay1[[1]], clay1[[2]], clay1[[3]], clay1[[4]], clay1[[5]], clay1[[6]], clay1[[7]])
+
+#generates a weighted average using the trapezoidal rule
+start_time <- Sys.time()
+weighted.clay = ((1/depths[6]) * ( (temp.clay[[1]]+temp.clay[[2]])*(depths[2]-depths[1]) +
+(temp.clay[[2]]+temp.clay[[3]])*(depths[3]-depths[2]) +
+(temp.clay[[3]]+temp.clay[[4]])*(depths[4]-depths[3]) +
+(temp.clay[[4]]+temp.clay[[5]])*(depths[5]-depths[4]) +
+(temp.clay[[5]]+temp.clay[[6]])*(depths[6]-depths[5]) )*0.5)
+end_time <- Sys.time()
+end_time - start_time
+
+plot(weighted.clay)
+
+#clean
+rm(clay1, temp.clay, grd.list)
+```
+
+###Bulk Density: Read in data and generate a weighted average of depths
+```{r}
+#bulk density fine earth
+setwd(paste0(datadir,"SoilGrids/BulkDensity"))
+
+grd.list <- list.files(pattern=resolution)
+bd1 <- stack(grd.list)
+
+temp.bd = c(bd1[[1]], bd1[[2]], bd1[[3]], bd1[[4]], bd1[[5]], bd1[[6]], bd1[[7]])
+
+#generates a weighted average using the trapezoidal rule and converts from kg/m3 to g/cm3
+start_time <- Sys.time()
+weighted.bd = ((1/depths[6]) * ( (temp.bd[[1]]+temp.bd[[2]])*(depths[2]-depths[1]) +
+(temp.bd[[2]]+temp.bd[[3]])*(depths[3]-depths[2]) +
+(temp.bd[[3]]+temp.bd[[4]])*(depths[4]-depths[3]) +
+(temp.bd[[4]]+temp.bd[[5]])*(depths[5]-depths[4]) +
+(temp.bd[[5]]+temp.bd[[6]])*(depths[6]-depths[5]) )*0.5)*0.001
+end_time <- Sys.time()
+end_time - start_time
+
+plot(weighted.bd)
+
+#clean
+rm(bd1, temp.bd, grd.list)
+```
+
+###SOC Stock: Read in
+```{r}
+#SOC stock to 100cm in t/ha
+setwd(paste0(datadir,"SoilGrids/SOCStock"))
+
+grd.list <- list.files(pattern=resolution)
+soc1 <- stack(grd.list)
+
+#this converts from t/ha to kg/m3
+converted.soc = (soc1[[1]])*0.1
+
+plot(converted.soc)
+
+#clean
+rm(soc1, grd.list)
+```
+
+###SOC Concentration: Read in data and generate a weighted average of depths
+```{r}
+setwd(paste0(datadir,"SoilGrids/SOCCont"))
+
+grd.list <- list.files(pattern=resolution)
+soc2 <- stack(grd.list) #g/kg
+
+temp.soc2 = c(soc2[[1]], soc2[[2]], soc2[[3]], soc2[[4]], soc2[[5]], soc2[[6]], soc2[[7]])
+
+#this generates a weighted average using the trapezoidal rule
+start_time <- Sys.time()
+weighted.soc2 = ((1/depths[6]) * ( (temp.soc2[[1]]+temp.soc2[[2]])*(depths[2]-depths[1]) +
+(temp.soc2[[2]]+temp.soc2[[3]])*(depths[3]-depths[2]) +
+(temp.soc2[[3]]+temp.soc2[[4]])*(depths[4]-depths[3]) +
+(temp.soc2[[4]]+temp.soc2[[5]])*(depths[5]-depths[4]) +
+(temp.soc2[[5]]+temp.soc2[[6]])*(depths[6]-depths[5]) )*0.5)
+end_time <- Sys.time()
+end_time - start_time
+
+plot(weighted.soc2)
+
+#clean
+rm(soc2, temp.soc2, grd.list)
+```
+
+###MAT and MAP: Read in
+```{r}
+map <- raster(paste0(datadir,"WorldClim/wc2.0_2.5m_bio/wc2.0_bio_2.5m_12.tif"))
+mat <- raster(paste0(datadir,"WorldClim/wc2.0_2.5m_bio/wc2.0_bio_2.5m_01.tif"))
+
+mat.sized <- resample(mat, weighted.phs)
+map.sized <- resample(map, weighted.phs)
+```
+
+###Soil Order: Read in
+```{r}
+soilord <- raster(paste0(datadir,"SoilGrids/Taxonomy/TAXOUSDA_10km_ll.tif"))
+tax.legend <- read.csv(paste0(datadir,"SoilGrids/Taxonomy/TAXOUSDA_legend_color.csv"))
+tax_key <- read.csv(paste0(datadir,"global_taxonomy_key.csv"))
+
+names(tax.legend) <- c("Color","Suborder","Value")
+
+tax.info <- dplyr::left_join(tax.legend, tax_key, by=c("Suborder")) 
+
+map.soil <- as.data.frame(values(soilord))
+names(map.soil) <- c("Value")
+
+new.values <- dplyr::left_join(map.soil, tax.info, by=c("Value"))
+
+values(soilord) <- new.values$Order 
+plot(soilord)
+
+unique(new.values$Order)
+as.integer(unique(new.values$Order))
+#1=Alfisol
+#2=Andisol
+#3=Aridisol
+#4=Entisol
+#5=Gelisol
+#6=Histosol
+#7=Inceptisol
+#8=Mollisol
+#9=Oxisol
+#10=Spodosol
+#11=Ultisol
+#12=Vertisol
+```
+
+###Read in alternate layers
+####MAT and MAP from CHELSA
+```{r}
+#http://chelsa-climate.org/ (1979-2013)
+mat2 <- raster(paste0(datadir,"NotSoilGrids/CHELSA_bio10_01_MAT_C10_1979_2000.tif"))
+map2 <- raster(paste0(datadir,"NotSoilGrids/CHELSA_bio10_12_MAP_C10_1979_2000.tif"))
+
+mat.sized1 <- resample(mat2, weighted.phs)
+map.sized1 <- resample(map2, weighted.phs)
+
+mat.sized2 <- mat.sized1/10
+map.sized2 <- map.sized1
+plot(mat.sized2)
+plot(map.sized2)
+```
+
+####Clay and pH from SunYetSen Uni
+```{r}
+cfile <- paste0(datadir,"NotSoilGrids/SunYatSen_CLAY5min.nc")
+pfile <- paste0(datadir,"NotSoilGrids/SunYatSen_PHCA5min.nc")
+
+temp.clay2 <- brick(readGDAL(cfile))
+temp.phs2 <- brick(readGDAL(pfile))
+#to 1.1m depth
+mdepths <- 100*c(mean(c(0,0.045)), mean(c(0.045,0.091)), mean(c(0.091,0.166)), mean(c(0.166,0.289)), mean(c(0.289,0.493)), mean(c(0.493,0.829)), mean(c(0.829,1.383)))
+
+start_time <- Sys.time()
+#pH is x10 for GSDE also
+weighted.phs2 = ((1/depths[7]) * ( (temp.phs2[[1]]+temp.phs2[[2]])*(mdepths[2]-mdepths[1]) +
+(temp.phs2[[2]]+temp.phs2[[3]])*(mdepths[3]-mdepths[2]) +
+(temp.phs2[[3]]+temp.phs2[[4]])*(mdepths[4]-mdepths[3]) +
+(temp.phs2[[4]]+temp.phs2[[5]])*(mdepths[5]-mdepths[4]) +
+(temp.phs2[[5]]+temp.phs2[[6]])*(mdepths[6]-mdepths[5]) +
+(temp.phs2[[6]]+temp.phs2[[7]])*(mdepths[7]-mdepths[6])  )*0.5)*0.1
+
+#clay
+weighted.clay2 = ((1/depths[7]) * ( (temp.clay2[[1]]+temp.clay2[[2]])*(mdepths[2]-mdepths[1]) +
+(temp.clay2[[2]]+temp.clay2[[3]])*(mdepths[3]-mdepths[2]) +
+(temp.clay2[[3]]+temp.clay2[[4]])*(mdepths[4]-mdepths[3]) +
+(temp.clay2[[4]]+temp.clay2[[5]])*(mdepths[5]-mdepths[4]) +
+(temp.clay2[[5]]+temp.clay2[[6]])*(mdepths[6]-mdepths[5]) +
+(temp.clay2[[6]]+temp.clay2[[7]])*(mdepths[7]-mdepths[6])  )*0.5)
+end_time <- Sys.time()
+end_time - start_time
+
+clay.sized2 <- resample(weighted.clay2, weighted.phs)
+phs.sized2 <- resample(weighted.phs2, weighted.phs)
+```
+
+##Save Layers
+```{r}
+save(weighted.phs, weighted.clay, weighted.bd, converted.soc, mat.sized, map.sized, soilord, weighted.soc2, weighted.cfrag, mat.sized2, map.sized2, clay.sized2, phs.sized2, file=paste0(datadir,"maplayers.Rdata"))
+```
