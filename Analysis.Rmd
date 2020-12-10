@@ -134,7 +134,7 @@ bigdf <- mice::complete(out)
 bigdf$Dataset <- print.df$Dataset
 
 pdf(file=paste0(figdir,"FigureS7.pdf"), height=8, width=8)
-densityplot(out)
+densityplot(out, subset=.imp==0:1)
 dev.off()
 
 #Proportion missing
@@ -344,6 +344,23 @@ x_cex <- 0.85
 y_cex <- 0.7
 y_at_q <- -0.2
 y_at_k <- -0.4
+
+#prepare color legend
+breaks.clay = c(1, 2, 3, 4, 5, 6, 7, 8)
+labels.clay = c(0, 10, 20, 30, 40, 50, 60, 70)
+breaks.pH = c(1, 2.4, 3.8, 5.2, 6.6, 8)
+labels.pH = c(3, 4, 5, 6, 7, 8)
+ColRange = c("#FF000AB3","#D90600B3","#B34300B3","#6F8F00B3","#009274B3","#004BB6B3","#0014DCB3","#000AFFB3")
+
+dummy <-  as.data.frame(cbind(x = 1:402, y=1:402, z= seq(1,8,length=402)))
+
+pdf(file=paste0(figdir, "legend_clay.pdf"), height =2, width =2)
+ggplot(dummy, aes(x,y, fill=z)) + geom_raster() + scale_fill_gradientn(colours=ColRange, breaks=breaks.clay,labels=labels.clay, name= "Clay (%)")
+dev.off()
+
+pdf(file=paste0(figdir, "legend_pH.pdf"), height =2, width =2)
+ggplot(dummy, aes(x,y, fill=z)) + geom_raster() + scale_fill_gradientn(colours=ColRange, breaks=breaks.pH,labels=labels.pH, name= "pH")
+dev.off()
 
 pdf(file=paste0(figdir,"Figure2a.pdf"), height=4, width=6)
 Col=fcol(partialq,1,orderByImportance=T)
@@ -875,13 +892,13 @@ get_global_summaries(df.scale)
 #names
 names <- c("qmax","kaff","totalSOC")
 
-#plot range summaries for lldf.avg, lldf.DOC.low, lldf.DOC.high
+#plot range summaries for lldf.avg
 point <- cbind(lldf.avg$qmax.g.kg,
                lldf.avg$k.L.mg,
                lldf.avg$tot.soc.kg.m3
                )
 
-#plot range summaries for df.scale, df.lowDOC, df.highDOC
+#plot range summaries for df.scale
 map <- cbind(df.scale$qmax.g.kg,
              df.scale$k.L.mg,
              df.scale$tot.soc.kg.m3
@@ -900,7 +917,6 @@ lims$out.max <- as.numeric(as.character(lims$out.max))
 
 write.csv(lims, file=paste0(datadir,"limits.csv"))
 ```
-
 
 #Timer
 ```{r}

@@ -81,7 +81,7 @@ m3.df$Latitude <- as.numeric(m3.df$Latitude)
 m3.df$Longitude <- as.numeric(m3.df$Longitude)
 
 #Remove outlier
-m3.df$EstimateQmax[m3.df$EstimateQmax>100000] <- NA
+m3.df$EstimateQmax[m3.df$EstimateQmax>(mean(m3.df$EstimateQmax, na.rm=T)+3*sd(m3.df$EstimateQmax, na.rm=T))] <- NA
 ```
 
 ###Kothawala
@@ -280,7 +280,7 @@ w2.df$Dataset <- rep("Feng",length(dim(w2.df)[1]))
 
 ###Kaiser
 ```{r}
-kai1.df <- read_excel(paste0(datadir,"/Klaus_Kaiser/Boden_condensed-formatted.xlsx"))
+kai1.df <- read_excel(paste0(datadir,"/Klaus_Kaiser/Soils_condensed-formatted.xlsx"))
 kai1.df$OC <- kai1.df$OC*1000
 names(kai1.df) <- c("SoilID","Soil.Series","Horizon","Depth.cm","Clay.per","pH","Fed.g.kg","Alo.g.kg","Feo.g.kg","BD.g.cm3","OC.mg.kg","Latitude","Longitude","MAT.C","MAP.mm")
 kai1.df$Dataset <- rep("Kaiser",length(dim(kai1.df)[1]))
@@ -435,10 +435,11 @@ WRG:lay$wrgr_value_avg
 coarse fragments volumetric: lay$cfvo_value_avg
 ```
 ```{r}
-df <- read.table("/Users/rzabramoff/Dropbox (Climate)/External Collaborations/ISCN/WoSIS_2016_July/wosis_201607_profiles.txt", sep="\t", header=T, na.strings=c(""))
+#These data files can be dowloaded directly from the ISRIC Data Hub: https://data.isric.org/geonetwork/srv/eng/catalog.search#/metadata/76f1bae3-cee1-4bc7-98b2-beb036d88d2b
+df <- read.table(paste0(datadir,"WoSIS_2016_July/wosis_201607_profiles.txt"), sep="\t", header=T, na.strings=c(""))
 df$profile_id <- as.character(df$profile_id)
-att <- read.table("/Users/rzabramoff/Dropbox (Climate)/External Collaborations/ISCN/WoSIS_2016_July/wosis_201607_attributes.txt", sep="\t", header=T)
-lay <- read.table("/Users/rzabramoff/Dropbox (Climate)/External Collaborations/ISCN/WoSIS_2016_July/wosis_201607_layers.txt", sep="\t", header=T, fill=T)
+att <- read.table(paste0(datadir,"WoSIS_2016_July/wosis_201607_attributes.txt"), sep="\t", header=T)
+lay <- read.table(paste0(datadir,"WoSIS_2016_July/wosis_201607_layers.txt"), sep="\t", header=T, fill=T)
 lay$profile_id <- as.character(lay$profile_id)
 
 save(df, att, lay, file=paste0(datadir,"wosis.Rdata"))
@@ -446,6 +447,7 @@ save(df, att, lay, file=paste0(datadir,"wosis.Rdata"))
 
 ##Add climate covariates
 ```{r}
+#These data files were downloaded from https://www.worldclim.org/
 map <- raster(paste0(datadir,"WorldClim/wc2.0_30s_bio/wc2.0_bio_30s_12.tif"))
 mat <- raster(paste0(datadir,"WorldClim/wc2.0_30s_bio/wc2.0_bio_30s_01.tif"))
 
@@ -510,6 +512,7 @@ save(indexdf, file=paste0(datadir,"indexdf.Rdata"))
 #Prep gridded data
 ##Settings
 ```{r}
+##Gridded data files were dowloaded from the ISRIC Data Hub: https://data.isric.org
 ##Imports one layer at a time
 depths = c(0, 5, 15, 30, 60, 100, 200)
 resolution = "10km"
@@ -551,7 +554,7 @@ temp.phs = c(ph1[[1]], ph1[[2]], ph1[[3]], ph1[[4]], ph1[[5]], ph1[[6]], ph1[[7]
 
 rm(ph1, grd.list)
 
-#pH is x10, this is in the documentation
+#pH is x10 - This is in the SoilGrids documentation
 #generates a weighted average using the trapezoidal rule and also converts to regular pH units
 start_time <- Sys.time()
 weighted.phs = ((1/depths[6]) * ( (temp.phs[[1]]+temp.phs[[2]])*(depths[2]-depths[1]) +
@@ -707,7 +710,7 @@ as.integer(unique(new.values$Order))
 ###Read in alternate layers
 ####MAT and MAP from CHELSA
 ```{r}
-#http://chelsa-climate.org/ (1979-2013)
+#Downloaded from http://chelsa-climate.org/ (1979-2013)
 mat2 <- raster(paste0(datadir,"NotSoilGrids/CHELSA_bio10_01_MAT_C10_1979_2000.tif"))
 map2 <- raster(paste0(datadir,"NotSoilGrids/CHELSA_bio10_12_MAP_C10_1979_2000.tif"))
 
