@@ -17,7 +17,7 @@ library(raster)
 
 #set path to where figures should be output and where data are stored
 figdir = "/Users/rzabramoff/Dropbox (Climate)/LSCE work files/Documents/Qmax/"
-datadir <- "/Users/rzabramoff/Dropbox (Climate)/LSCE work files/Data/"
+datadir <- "/Users/rzabramoff/Dropbox (Climate)/LSCE work files/Data"
 ```
 
 #Prep sorption data
@@ -394,7 +394,7 @@ g+h
 ```{r}
 bignum = 1e20
 
-pdf(file=paste0(figdir,"FigureS5.pdf"), width=7, height=4)
+pdf(file=paste0(figdir,"FigureS1.pdf"), width=7, height=4)
 par(mfrow=c(1,2))
 plot(bigdf$EstimateQmax, bigdf$Qmax.mg.kg.reported, ylim=c(0,7000), xlim=c(0,7000), xlab="Recalculated "~Q[sp]~ "(mg/kg)", ylab="Reported "~Q[sp]~ "(mg/kg)")
 lines(c(0,bignum),c(0,bignum), lty=2)
