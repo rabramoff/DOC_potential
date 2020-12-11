@@ -17,7 +17,7 @@ library(raster)
 
 #set path to where figures should be output and where data are stored
 figdir = "/Users/rzabramoff/Dropbox (Climate)/LSCE work files/Documents/Qmax/"
-datadir <- "/Users/rzabramoff/Dropbox (Climate)/LSCE work files/Data"
+datadir <- "/Users/rzabramoff/Dropbox (Climate)/LSCE work files/Data/"
 ```
 
 #Prep sorption data
